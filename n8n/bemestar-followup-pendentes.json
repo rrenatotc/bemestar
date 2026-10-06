@@ -1,0 +1,160 @@
+{
+  "name": "BemEstar - Follow-up Pendentes",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "name": "A cada 1h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select id, created_at, nome, telefone, cidade, itens from leads_bemestar\nwhere status = 'novo' and created_at < now() - interval '24 hours'\n  and (lembrado_em is null or lembrado_em < now() - interval '24 hours')\norder by created_at limit 30;",
+        "options": {}
+      },
+      "name": "Buscar pendentes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE",
+          "name": "Supabase BemEstar"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Junta os leads pendentes num lembrete só\nconst leads = $input.all().map(i => i.json).filter(l => l.id);\nif (!leads.length) return [];\nconst fmt = l => {\n  const itens = (typeof l.itens === 'string' ? JSON.parse(l.itens) : l.itens || []).map(i => i.quantidade + 'x ' + i.produto).join(', ');\n  const horas = Math.round((Date.now() - new Date(l.created_at).getTime()) / 36e5);\n  return '• ' + (l.nome || 'Sem nome') + (l.cidade ? ' (' + l.cidade + ')' : '') + ' há ' + horas + 'h\\n  ' + (itens || 'orçamento geral') +\n    (l.telefone ? '\\n  https://wa.me/' + l.telefone : '');\n};\nconst texto = '⏰ *Pedidos sem resposta há mais de 24h* (' + leads.length + ')\\n\\n' + leads.map(fmt).join('\\n\\n') +\n  '\\n\\nQuando responder, marque o status como \"respondido\" na tabela leads_bemestar.';\nreturn [{ json: { texto, ids: leads.map(l => l.id) } }];"
+      },
+      "name": "Montar lembrete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_APIKEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $env.DANIEL_WHATSAPP, text: $json.texto, delay: 1200, options: { delay: 1200, presence: 'composing' } }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "name": "Lembrar Daniel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update leads_bemestar set lembrado_em = now() where id = any($1::uuid[])",
+        "options": {
+          "queryReplacement": "={{ '{' + $('Montar lembrete').first().json.ids.join(',') + '}' }}"
+        }
+      },
+      "name": "Marcar lembrados",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        960,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE",
+          "name": "Supabase BemEstar"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 1h": {
+      "main": [
+        [
+          {
+            "node": "Buscar pendentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar pendentes": {
+      "main": [
+        [
+          {
+            "node": "Montar lembrete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar lembrete": {
+      "main": [
+        [
+          {
+            "node": "Lembrar Daniel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lembrar Daniel": {
+      "main": [
+        [
+          {
+            "node": "Marcar lembrados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

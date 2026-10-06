@@ -1,0 +1,339 @@
+{
+  "name": "BemEstar - Pedido Landing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "bemestar-pedido",
+        "responseMode": "onReceived",
+        "options": {
+          "allowedOrigins": "*",
+          "responseCode": 200
+        }
+      },
+      "name": "Webhook pedido",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "bemestar-pedido"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valida secret, honeypot, rate limit por IP e normaliza o pedido\nconst item = $input.first().json;\nconst h = item.headers || {};\nconst b = item.body || {};\n\nif (!$env.WEBHOOK_SECRET || h['x-webhook-secret'] !== $env.WEBHOOK_SECRET) return [];\nif (b.site) return []; // honeypot preenchido = bot\n\n// rate limit simples: 5 pedidos por IP a cada 10 min (só persiste em execução de produção)\nconst ip = String(h['x-forwarded-for'] || h['x-real-ip'] || '').split(',')[0].trim() || 'sem-ip';\nconst st = $getWorkflowStaticData('global');\nconst agora = Date.now(), janela = 10 * 60 * 1000;\nst.rl = Object.fromEntries(Object.entries(st.rl || {}).map(([k, v]) => [k, v.filter(t => agora - t < janela)]).filter(([, v]) => v.length));\nconst hits = st.rl[ip] || [];\nif (hits.length >= 5) return [];\nst.rl[ip] = [...hits, agora];\n\nconst limpa = (v, max = 120) => String(v ?? '').replace(/\\s+/g, ' ').trim().slice(0, max);\n\nlet tel = String(b.whatsapp || '').replace(/\\D/g, '');\nif (tel.startsWith('55') && tel.length >= 12) tel = tel.slice(2);\ntel = tel.length === 10 || tel.length === 11 ? '55' + tel : '';\n\nconst itens = (Array.isArray(b.itens) ? b.itens : [])\n  .map(i => ({ produto: limpa(i && i.produto), quantidade: Math.min(999, Math.max(1, parseInt(i && i.quantidade, 10) || 1)) }))\n  .filter(i => i.produto)\n  .slice(0, 10);\n\nconst utms = {};\nfor (const [k, v] of Object.entries(b.utms || b)) if (k.startsWith('utm_')) utms[k] = limpa(v, 200);\n\nconst itensHash = JSON.stringify([...itens].sort((a, c) => a.produto.localeCompare(c.produto)));\n\nreturn [{ json: {\n  nome: limpa(b.nome, 80),\n  telefone: tel,\n  empresa: limpa(b.empresa),\n  cidade: limpa(b.cidade),\n  prazo: limpa(b.prazo, 40),\n  itens,\n  itens_hash: itensHash,\n  origem: limpa(b.origem, 40) || 'desconhecida',\n  utms,\n  ip,\n} }];"
+      },
+      "name": "Validar e normalizar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into leads_bemestar (nome, telefone, empresa, cidade, prazo, itens, itens_hash, origem, utms, ip)\nselect $1, nullif($2, ''), $3, $4, $5, $6::jsonb, $7, $8, $9::jsonb, $10\nwhere $2 = '' or not exists (\n  select 1 from leads_bemestar\n  where telefone = $2 and itens_hash = $7 and created_at > now() - interval '10 minutes'\n)\nreturning id, nome, telefone, empresa, cidade, prazo, itens, origem;",
+        "options": {
+          "queryReplacement": "={{ [$json.nome, $json.telefone, $json.empresa, $json.cidade, $json.prazo, JSON.stringify($json.itens), $json.itens_hash, $json.origem, JSON.stringify($json.utms), $json.ip] }}"
+        }
+      },
+      "name": "Deduplicar e salvar lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE",
+          "name": "Supabase BemEstar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta os textos do aviso para o Daniel e da confirmação para o cliente\nconst l = $input.first().json;\nconst itens = typeof l.itens === 'string' ? JSON.parse(l.itens) : (l.itens || []);\nconst listaItens = itens.length ? itens.map(i => '• ' + i.quantidade + 'x ' + i.produto).join('\\n') : '• (clicou no botão geral, sem item)';\nconst urgente = l.prazo === 'Preciso logo';\n\nconst linhas = [\n  (urgente ? '🔥 URGENTE\\n' : '') + '🛒 *Novo pedido pela landing*',\n  '',\n  listaItens,\n  '',\n  '👤 ' + (l.nome || 'Sem nome'),\n  l.empresa ? '🏢 ' + l.empresa : null,\n  l.cidade ? '📍 ' + l.cidade : null,\n  l.prazo ? '⏱️ Prazo: ' + l.prazo : null,\n  '🔗 Origem: ' + l.origem,\n  l.telefone ? '📱 https://wa.me/' + l.telefone : '📱 Cliente não deixou o WhatsApp (ele deve te chamar direto)',\n].filter(v => v !== null);\n\nconst itensCurto = itens.map(i => i.quantidade + 'x ' + i.produto).join(', ');\nconst primeiroNome = (l.nome || '').split(' ')[0] || 'tudo bem';\n\nreturn [{ json: {\n  id: l.id,\n  telefone: l.telefone,\n  msgDaniel: linhas.join('\\n'),\n  msgCliente: 'Oi ' + primeiroNome + ', recebemos seu pedido na Bem Estar: ' + (itensCurto || 'orçamento') + '. O Daniel já vai te responder por aqui.',\n} }];"
+      },
+      "name": "Montar mensagens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_APIKEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $env.DANIEL_WHATSAPP, text: $json.msgDaniel, delay: 1200, options: { delay: 1200, presence: 'composing' } }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "name": "Avisar Daniel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "tel",
+              "leftValue": "={{ $('Montar mensagens').first().json.telefone }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Cliente deixou WhatsApp?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 8,
+        "unit": "seconds"
+      },
+      "name": "Espera antes de responder",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        -200
+      ],
+      "webhookId": "bemestar-wait"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_APIKEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Montar mensagens').first().json.telefone, text: $('Montar mensagens').first().json.msgCliente, delay: 4000, options: { delay: 4000, presence: 'composing' } }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "name": "Confirmar ao cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        -200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update leads_bemestar set status = 'erro_envio' where id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ $('Montar mensagens').first().json.id }}"
+        }
+      },
+      "name": "Status erro_envio (Daniel)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE",
+          "name": "Supabase BemEstar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update leads_bemestar set status = 'erro_envio' where id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ $('Montar mensagens').first().json.id }}"
+        }
+      },
+      "name": "Status erro_envio (cliente)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1920,
+        -60
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE",
+          "name": "Supabase BemEstar"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook pedido": {
+      "main": [
+        [
+          {
+            "node": "Validar e normalizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar e normalizar": {
+      "main": [
+        [
+          {
+            "node": "Deduplicar e salvar lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicar e salvar lead": {
+      "main": [
+        [
+          {
+            "node": "Montar mensagens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar mensagens": {
+      "main": [
+        [
+          {
+            "node": "Avisar Daniel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisar Daniel": {
+      "main": [
+        [
+          {
+            "node": "Cliente deixou WhatsApp?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Status erro_envio (Daniel)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status erro_envio (Daniel)": {
+      "main": [
+        [
+          {
+            "node": "Cliente deixou WhatsApp?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cliente deixou WhatsApp?": {
+      "main": [
+        [
+          {
+            "node": "Espera antes de responder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Espera antes de responder": {
+      "main": [
+        [
+          {
+            "node": "Confirmar ao cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar ao cliente": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Status erro_envio (cliente)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
