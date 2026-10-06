@@ -1,6 +1,6 @@
 # Bem Estar Representações: landing e automação de pedidos
 
-Landing estática (`carrinhos-de-obra.html`) que abre o WhatsApp do Daniel e, ao mesmo tempo, manda o pedido para o n8n, que salva o lead e avisa pela Evolution API.
+Landing estática (`index.html`) que abre o WhatsApp do Daniel e, ao mesmo tempo, manda o pedido para o n8n, que salva o lead e avisa pela Evolution API.
 
 ```
 Landing ──POST──▶ n8n /webhook/bemestar-pedido ──▶ Postgres (leads_bemestar)
@@ -12,7 +12,7 @@ Landing ──POST──▶ n8n /webhook/bemestar-pedido ──▶ Postgres (lea
 
 | Arquivo | O que é |
 |---|---|
-| `carrinhos-de-obra.html` | Landing com o `CONFIG` no topo (`webhookUrl`, `webhookSecret`, `whatsapp`) |
+| `index.html` | Landing com o `CONFIG` no topo (`webhookUrl`, `webhookSecret`, `whatsapp`) |
 | `sql/leads_bemestar.sql` | Tabela de leads (Supabase ou Postgres) |
 | `n8n/bemestar-pedido-landing.json` | Workflow "BemEstar - Pedido Landing" |
 | `n8n/bemestar-followup-pendentes.json` | Workflow de follow-up (a cada 1h) |
