@@ -136,14 +136,16 @@ button{font:inherit;color:inherit}
   .hero{height:190vh}
   .hero-pin{grid-template-rows:1fr;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);width:min(1280px,100%);margin-inline:auto}
   .hero-copy{align-self:center;padding:0 0 6vh 40px}
-  .hero-copy .display{font-size:clamp(4.6rem,7.6vw,8.4rem)}
+  .hero-copy .display{font-size:clamp(3.4rem,min(7.6vw,11vh),8.4rem)}
+  .hero-copy .lead{margin-top:min(14px,1.6vh)}
+  .hero-cta,.hero-proof{margin-top:min(22px,2.4vh)}
   .hero-cta,.hero-proof{display:flex}
   .scene{margin-bottom:0}
   .scroll-hint{left:auto;right:24px}
 }
 
 /* ---------- tape marquee ---------- */
-.tape{position:relative;z-index:5;margin:-10px 0 0;transform:rotate(-2deg);background:var(--ocre);color:#1D2327;overflow:hidden;
+.tape{position:relative;z-index:5;margin:28px 0 0;transform:rotate(-2deg);background:var(--ocre);color:#1D2327;overflow:hidden;
   border-block:9px solid transparent;border-image:repeating-linear-gradient(-45deg,#1D2327 0 12px,var(--ocre) 12px 24px) 9}
 .tape-track{display:flex;width:max-content;animation:tape 26s linear infinite}
 .tape-track span{display:flex;align-items:center;gap:22px;padding:12px 22px 10px 0;font-weight:850;font-stretch:65%;text-transform:uppercase;font-size:1.5rem;white-space:nowrap}
